@@ -18,10 +18,12 @@ ArmEnv::ArmEnv(const std::string& xml_path)
     m_ = mj_loadXML(xml_path.c_str(), nullptr, err, sizeof(err));
     if (!m_) throw std::runtime_error(std::string("mj_loadXML: ") + err);
     d_ = mj_makeData(m_);
+    scratch_ = mj_makeData(m_);
 }
 
 ArmEnv::~ArmEnv()
 {
+    mj_deleteData(scratch_);
     mj_deleteData(d_);
     mj_deleteModel(m_);
 }
@@ -50,6 +52,33 @@ arm::ArmState ArmEnv::getState(const std::vector<int>& qpos_ids,
         s.dq[i] = d_->qvel[dof_ids[i]];
     }
     return s;
+}
+
+Eigen::Vector3d ArmEnv::bodyPosition(int body_id) const
+{
+    if (body_id < 0 || body_id >= m_->nbody) return Eigen::Vector3d::Zero();
+    return Eigen::Vector3d(d_->xpos[3 * body_id + 0],
+                           d_->xpos[3 * body_id + 1],
+                           d_->xpos[3 * body_id + 2]);
+}
+
+Eigen::Vector3d ArmEnv::bodyPositionFromQ(const arm::VecN& q,
+                                          const std::vector<int>& qpos_ids,
+                                          int body_id) const
+{
+    if (!scratch_ || body_id < 0 || body_id >= m_->nbody) {
+        return Eigen::Vector3d::Zero();
+    }
+
+    mj_copyData(scratch_, m_, d_);
+    for (int i = 0; i < static_cast<int>(qpos_ids.size()) && i < static_cast<int>(q.size()); ++i) {
+        scratch_->qpos[qpos_ids[i]] = q[i];
+    }
+    mj_forward(m_, scratch_);
+
+    return Eigen::Vector3d(scratch_->xpos[3 * body_id + 0],
+                           scratch_->xpos[3 * body_id + 1],
+                           scratch_->xpos[3 * body_id + 2]);
 }
 
 arm::VecN ArmEnv::getActuatorTorques(const std::vector<int>& dof_ids) const

@@ -1,0 +1,10 @@
+samples: 4820
+duration_s: 9.638000
+joints: 6
+
+joint 0: rms_error=0.002704, max_abs_error=0.004850, rms_dhat=0.054670
+joint 1: rms_error=0.013370, max_abs_error=0.130070, rms_dhat=0.359424
+joint 2: rms_error=0.012885, max_abs_error=0.129900, rms_dhat=0.294882
+joint 3: rms_error=0.002604, max_abs_error=0.004658, rms_dhat=0.014256
+joint 4: rms_error=0.009030, max_abs_error=0.129904, rms_dhat=0.101239
+joint 5: rms_error=0.008853, max_abs_error=0.129904, rms_dhat=0.012068

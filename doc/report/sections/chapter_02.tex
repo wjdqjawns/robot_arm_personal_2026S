@@ -1,12 +1,39 @@
-\begin{section}{Chapter 2: Literature Review}
-    Here is a sample figure:
+\section{System Description and Control Architecture}
 
-    \begin{figure}[H]
-        \centering
-        \includegraphics[width=0.6\linewidth]{kalman.png} % replace with your file
-        \caption{This is a test figure}
-        \label{fig:test}
-    \end{figure}
+\subsection{Piper Arm Dynamics}
+The AgileX Piper is a 6-DOF collaborative manipulator with torque-controlled actuation. The dynamics satisfy:
+\begin{equation}
+    M(q) \ddot{q} + C(q,\dot{q}) \dot{q} + G(q) = \tau_{\text{applied}} + \tau_{\text{friction}} + \tau_{\text{disturbance}}
+\end{equation}
+where $M(q)$ is the inertia matrix, $C(q,\dot{q})$ includes centrifugal/Coriolis terms, and $G(q)$ is gravity.
 
-    As shown in Figure~\ref{fig:test}, this is a test.
-\end{section}
+The built-in gravity compensation in the MJCF model effectively removes gravity from measured dynamics.
+
+\subsection{Control Architecture}
+The PD control law with observer feedforward:
+\begin{equation}
+    \tau_{\text{ctrl}} = K_p (q_{\text{des}} - q) + K_d (\dot{q}_{\text{des}} - \dot{q}) - K_{\text{obs}} \cdot \hat{d}
+\end{equation}
+
+\subsection{Disturbance Observers}
+
+\subsubsection{DOB: Q-Filter Disturbance Observer}
+Estimates disturbances via first-order filtering of the torque residual:
+\begin{equation}
+    \hat{d}[k] = \alpha \hat{d}[k-1] + (1-\alpha) \left( \tau_{\text{meas}}[k] - M_n \ddot{q} - B_v \dot{q}[k] \right)
+\end{equation}
+Low computational cost, requires nominal inertia/damping.
+
+\subsubsection{Momentum Observer}
+    Leverages MuJoCo-computed mass matrix $M(q)$ for position-dependent disturbance estimation:
+    \begin{equation}
+        p[k] = M(q[k]) \dot{q}[k], \quad \hat{d}[k] = K_o \odot (p[k] - \hat{p}[k])
+    \end{equation}
+    Fast response but requires accurate mass matrix.
+
+\subsubsection{Force Observer}
+    Model-free first-order filter on torque error:
+    \begin{equation}
+        \hat{d}[k] = \alpha \hat{d}[k-1] + (1-\alpha) (\tau_{\text{meas}}[k] - \tau_{\text{cmd}}[k])
+    \end{equation}
+    Robust but slower response.

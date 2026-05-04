@@ -6,25 +6,33 @@
 
 \usepackage{general}
 
-\title{Drone Simulation Report}
-\author{Beomjun Chung}
+\title{Piper 6-DOF Arm Simulation Report:\\ Disturbance Estimation and Rejection Control}
+\author{Research Team}
 \date{\today}
 
 \begin{document}
     \maketitle
 
     \begin{abstract}
-    This is a sample abstract.
+        This report presents a research-grade simulation of the AgileX Piper 6-DOF robotic arm using MuJoCo physics engine. The simulation implements three disturbance observer variants (DOB, Momentum Observer, Force Observer) integrated with a PD controller for trajectory tracking. Experimental results demonstrate the effectiveness of observer-based disturbance rejection in improving tracking performance under matched and mismatched disturbances. This work provides a comprehensive framework for studying torque-level control, gravity compensation, and unknown disturbance estimation in multi-joint systems.
     \end{abstract}
 
-    \section{Introduction}
-    This is an example citation \cite{smith2023}.
+    \tableofcontents
+    \newpage
 
-    \section{Method}
-
-    \section{Conclusion}
+    \input{chapter_01}
+    \newpage
     \input{chapter_02}
+    \newpage
+    \input{chapter_03}
+    \newpage
+    \input{chapter_04}
+    \newpage
+    \input{chapter_05}
+    \newpage
+    \input{chapter_06}
 
+    \newpage
     \bibliographystyle{plain}
     \bibliography{reference}
 \end{document}

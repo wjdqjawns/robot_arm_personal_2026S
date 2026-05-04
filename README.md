@@ -47,6 +47,9 @@ MuJoCo (ground truth physics)
 | GLFW3 | 3.3.6 | `sudo apt install libglfw3-dev` |
 | CMake | ≥ 3.18 | `sudo apt install cmake` |
 | GCC | ≥ 11 (C++17) | `sudo apt install build-essential` |
+| Python | ≥ 3.8 | for offline analysis (optional) |
+| pandas | - | `pip install pandas` (for analysis) |
+| matplotlib | - | `pip install matplotlib` (for plots) |
 
 ### Install system packages
 
@@ -85,26 +88,73 @@ Output binary: `build/arm_sim`
 
 ## Run
 
-Paths in the YAML are resolved relative to the executable's project root automatically, so the binary can be run from any directory.
+### Build
+
+Use VS Code's task system (Ctrl+Shift+B) or command line:
 
 ```bash
-# From project root
-./build/arm_sim config/piper_arm.yaml
+# Terminal command
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build -j2
+```
 
-# From inside build/
-cd build
-./arm_sim ../config/piper_arm.yaml
+Or invoke from VS Code:
+- **Ctrl+Shift+B** — Run default build task (CMake: Configure + Build)
+- **Ctrl+Shift+P → Run Task** — Select specific task
+
+Available tasks:
+- `CMake: Configure` — Run cmake configure step
+- `CMake: Build` — Build executable (depends on Configure)
+- `Simulator: Run (default config)` — Run with `config/piper_arm.yaml`
+- `Simulator: Run (headless)` — Run without display server
+- `Analysis: Run on latest log` — Run offline analysis with plots
+
+### Run simulator
+
+```bash
+./build/arm_sim config/piper_arm.yaml
 ```
 
 Press **Escape** in the visualizer window to stop early.
 
-### Headless (no display server)
+To edit parameters, modify `config/piper_arm.yaml` and re-run.
 
-The visualizer is skipped automatically when no display is available:
+### Offline analysis
+
+After simulation completes, analyze the CSV:
 
 ```bash
-DISPLAY="" ./build/arm_sim config/piper_arm.yaml
+# Analyze with default parameters (plots joint 0 in detail)
+python3 scripts/analyze_log.py
+
+# Specify input CSV and output directory
+python3 scripts/analyze_log.py --input data/logs/piper_arm.csv --output-dir data/results/offline_analysis
+
+# Plot a specific joint (e.g., joint 3)
+python3 scripts/analyze_log.py --joint 3
 ```
+
+Or use the **Analysis: Run on latest log** task in VS Code (Ctrl+Shift+P).
+
+**Output:**
+- `summary.txt` — RMS tracking error, max error, disturbance estimate magnitude per joint
+- `joint_N_analysis.png` — Time-domain plot (position, error, control torque, disturbance estimate)
+- `joint_N_phase.png` — Phase plot (desired vs actual position)
+
+### 3D end-effector trajectory visualization
+
+After simulation, visualize the end-effector path in 3D space:
+
+```bash
+python3 scripts/analyze_3d_trajectory.py
+```
+
+**Output:**
+- `ee_trajectory_3d.png` — 3D plot of actual (red) and desired (green) end-effector paths
+- `ee_trajectory_error.png` — 3D trajectory colored by tracking error magnitude
+- `ee_trajectory_projections.png` — XY, XZ, YZ 2D projections with overlaid paths
+
+The script computes tracking statistics (max/avg position error) and displays them on screen.
 
 ---
 
@@ -121,10 +171,11 @@ CSV columns per timestep:
 | Desired joint position | `q_des0` – `q_des5` |
 | True joint velocity | `dq0` – `dq5` |
 | Controller torque | `tau_ctrl0` – `tau_ctrl5` |
-| Applied torque (ctrl + friction + disturbance) | `tau_applied0` – `tau_applied5` |
-| DOB estimate | `d_hat_dob0` – `d_hat_dob5` |
-| Momentum observer estimate | `d_hat_mo0` – `d_hat_mo5` |
-| Force observer estimate | `d_hat_fo0` – `d_hat_fo5` |
+| Disturbance estimate | `d_hat0` – `d_hat5` |
+| End-effector position (actual) | `ee_pos_x`, `ee_pos_y`, `ee_pos_z` |
+| End-effector position (desired) | `ee_des_pos_x`, `ee_des_pos_y`, `ee_des_pos_z` |
+
+---
 
 ---
 

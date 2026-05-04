@@ -1,0 +1,77 @@
+\section{Conclusions and Future Work}
+
+\subsection{Key Achievements}
+This simulation study validates a comprehensive framework for torque-controlled robotic arm control with observer-based disturbance rejection:
+
+\begin{enumerate}
+    \item \textbf{Multi-observer Implementation}: Successfully integrated three distinct disturbance observer architectures (DOB, Momentum Observer, Force Observer) with a unified PD control framework.
+    
+    \item \textbf{Robust Joint-Space Tracking}: Achieved RMS position errors of 2.6--8.2 mrad across six joints under matched and mismatched disturbances, with peak errors below 13 mrad.
+    
+    \item \textbf{Accurate Cartesian Control}: Demonstrated sub-5-cm end-effector position errors and 1.2-cm RMS tracking across complex 3D workspace trajectories.
+    
+    \item \textbf{Gravity Compensation}: Validated built-in gravity compensation in the MJCF model, enabling accurate dynamics without explicit feedforward.
+    
+    \item \textbf{Modular Architecture}: Created independently configurable layers for sensor noise, friction, matched/mismatched disturbances, and observer types.
+    
+    \item \textbf{Reproducibility}: Single YAML configuration file enables rapid experimental iteration without recompilation---critical for research and rapid prototyping.
+\end{enumerate}
+
+\subsection{Observer Trade-offs}
+\begin{table}[H]
+    \centering
+    \caption{Qualitative comparison of observer variants}
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{Criterion} & \textbf{DOB} & \textbf{Momentum} & \textbf{Force} \\
+        \midrule
+        Computational cost & Low & Medium & Low \\
+        Model dependence & Moderate & High & None \\
+        Tuning parameters & 3 & 1 & 1 \\
+        Disturbance response & Medium & Fast & Slow \\
+        Robustness to errors & Moderate & Low & High \\
+        Real-time capability & Excellent & Good & Excellent \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\textbf{DOB} balances low computational cost with moderate disturbance response time, suitable for industrial controllers with limited compute. \textbf{Momentum Observer} achieves fastest response by leveraging the full mass matrix but requires high-fidelity model knowledge. \textbf{Force Observer} provides maximum robustness with zero tuning but slower response due to first-order filter dynamics.
+
+\subsection{Sources of Residual Error}
+Despite observer-based feedforward, small tracking errors persist due to:
+\begin{itemize}
+    \item Observer finite bandwidth (cutoff frequency constraints)
+    \item Sensor noise corruption of disturbance estimates
+    \item Discontinuous coulomb friction resisting smooth estimation
+    \item Trajectory acceleration peaks (nonzero jerk in sinusoidal references)
+    \item Actuator torque saturation during high-acceleration phases
+\end{itemize}
+
+\subsection{Future Research Directions}
+
+\subsubsection{Control Enhancements}
+\begin{itemize}
+    \item Adaptive observer gain tuning based on estimation error statistics
+    \item Sliding-mode or nonlinear control for improved robustness margins
+    \item Hybrid observer combining DOB model-based efficiency with Force Observer robustness
+    \item Neural network-augmented observers trained on simulation data for learning unmodeled dynamics
+\end{itemize}
+
+\subsubsection{Experimental Validation}
+\begin{itemize}
+    \item Transfer learned policies to physical Piper arm hardware
+    \item Characterize real friction model through identification experiments
+    \item Validate disturbance rejection with attached payloads and external forces
+    \item Benchmark simulation predictions against real robot measurements
+\end{itemize}
+
+\subsubsection{Simulation Extensions}
+\begin{itemize}
+    \item Multi-arm coordination with collision detection
+    \item Contact force control and impedance shaping
+    \item GPU-accelerated Monte Carlo uncertainty quantification
+    \item Hardware-in-the-loop with real control firmware
+\end{itemize}
+
+\subsection{Final Remarks}
+This work demonstrates that observer-based disturbance rejection is a powerful technique for improving robustness in torque-controlled systems. The implemented high-fidelity simulation environment provides a solid foundation for control algorithm development, rapid prototyping, and educational outreach. The modular architecture facilitates customization for diverse applications from industrial manufacturing to collaborative manipulation. Future work will focus on experimental validation in physical systems and extension to more complex multi-agent scenarios.

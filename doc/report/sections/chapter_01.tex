@@ -1,0 +1,39 @@
+\section{Introduction}
+
+    \subsection{Background and Motivation}
+        Robotic arm control in the presence of unknown disturbances remains a fundamental challenge in modern control theory and robotics. 
+        Disturbances such as friction, payload variations, unmodeled dynamics, and external forces can severely degrade tracking performance 
+        and reduce system reliability. Traditional PD controllers, while simple and effective in ideal conditions, provide limited robustness 
+        against model uncertainties and disturbances.
+
+        Disturbance Observer-Based (DOB) control has emerged as a promising approach to address these challenges. By estimating unknown 
+        disturbances in real-time, observers enable feedback compensation without requiring explicit system models. This work implements 
+        three observer variants---Q-filter Disturbance Observer (DOB), Momentum Observer, and Force Observer---to evaluate their effectiveness 
+        in trajectory tracking and disturbance rejection tasks.
+
+    \subsection{Simulation Platform}
+        The simulation is built using:\vspace{-4pt}
+        \begin{itemize}
+            \item \textbf{MuJoCo 3.7.0}: Physics engine providing accurate dynamics modeling
+            \item \textbf{AgileX Piper}: 6-DOF collaborative manipulator with joint torque actuation
+            \item \textbf{C++17}: Core simulation loop with modular control architecture
+            \item \textbf{GLFW + OpenGL}: Real-time 3D visualization with trajectory monitoring
+        \end{itemize}
+
+    \subsection{Research Objectives}
+        \begin{enumerate}
+            \item Validate three observer implementations (DOB, Momentum, Force) in a high-fidelity simulator
+            \item Quantify tracking error under matched and mismatched disturbances
+            \item Compare computational cost vs. tracking performance across observer types
+            \item Demonstrate gravity compensation and friction estimation capabilities
+            \item Provide reproducible experimental framework for future research
+        \end{enumerate}
+
+    \subsection{Report Organization}
+        \begin{description}
+            \item[Chapter 2] System description, control architecture, and observer theory
+            \item[Chapter 3] Simulation setup, experimental parameters, and disturbance models
+            \item[Chapter 4] Joint-space tracking results and per-joint analysis
+            \item[Chapter 5] End-effector 3D trajectory and workspace analysis
+            \item[Chapter 6] Conclusions, performance comparisons, and future work
+        \end{description}

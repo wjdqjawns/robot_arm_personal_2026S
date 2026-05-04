@@ -1,9 +1,6 @@
 # =========================
-
 # Build / CMake
-
 # =========================
-
 build/
 cmake-build-*/
 CMakeFiles/
@@ -13,11 +10,8 @@ Makefile
 compile_commands.json
 
 # =========================
-
 # Binaries / Objects
-
 # =========================
-
 *.o
 *.so
 *.a
@@ -29,7 +23,6 @@ compile_commands.json
 # =========================
 # Python
 # =========================
-
 **pycache**/
 *.pyc
 *.pyo
@@ -39,7 +32,6 @@ dist/
 build/
 
 # Virtual environments
-
 venv/
 .env/
 .venv/
@@ -47,7 +39,6 @@ venv/
 # =========================
 # Logs / Data (IMPORTANT for your project)
 # =========================
-
 data/logs/
 data/results/
 
@@ -56,7 +47,6 @@ data/results/
 # =========================
 # IDE / Editor
 # =========================
-
 .vscode/
 .idea/
 *.swp
@@ -66,14 +56,12 @@ data/results/
 # =========================
 # OS files
 # =========================
-
 .DS_Store
 Thumbs.db
 
 # =========================
 # Testing / Coverage
 # =========================
-
 coverage/
 *.gcda
 *.gcno
@@ -82,27 +70,21 @@ coverage/
 # =========================
 # MuJoCo / Simulation temp
 # =========================
-
 *.mjb
 *.mjcf.tmp
 
 # =========================
 # Misc
 # =========================
-
 .cache/
 tmp/
 temp/
 .claude/
 
 # =========================
-
 # Keep important assets
-
 # =========================
-
 # (Do NOT ignore these)
-
 !asset/
 !config/
 !include/

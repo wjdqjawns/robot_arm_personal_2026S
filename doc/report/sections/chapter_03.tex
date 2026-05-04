@@ -1,0 +1,48 @@
+\section{Simulation Setup and Experimental Configuration}
+
+\subsection{Simulation Parameters}
+The simulation was executed with the following core parameters to balance computational efficiency and physical accuracy.
+\begin{table}[H]
+    \centering
+    \caption{Core simulation parameters}
+    \begin{tabular}{lll}
+        \toprule
+        \textbf{Parameter} & \textbf{Value} & \textbf{Unit} \\
+        \midrule
+        Simulation duration & 28.87 & s \\
+        Timestep & 0.002 & s \\
+        Control frequency & 500 & Hz \\
+        Number of joints & 6 & --- \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Controller Gains}
+Proportional and derivative gains were tuned to balance fast response against oscillation. Gains decrease with joint index to account for increasing link inertias and flexibility.
+\begin{table}[H]
+    \centering
+    \caption{PD controller gains by joint}
+    \begin{tabular}{ccccccc}
+        \toprule
+        \textbf{Joint} & J0 & J1 & J2 & J3 & J4 & J5 \\
+        \midrule
+        $K_p$ [Nm/rad] & 80 & 80 & 60 & 40 & 20 & 20 \\
+        $K_d$ [Nm·s/rad] & 5.0 & 5.0 & 4.0 & 3.0 & 1.5 & 1.5 \\
+        $\tau_{\max}$ [Nm] & 18 & 18 & 18 & 9 & 7 & 7 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Trajectory Generation}
+Reference trajectories are sinusoidal with staggered phase offsets to create complex 3D workspace paths:
+\begin{equation}
+    q_{\text{des}}[i](t) = 0.15 \sin(2\pi \cdot 0.2 \cdot t + i \cdot \pi/3) \text{ rad}
+\end{equation}
+Period: 5 seconds, Amplitude: 0.15 rad, Phase offset: $i \times 60°$ per joint.
+
+\subsection{Friction Model (Unknown to Controller)}
+The true arm dynamics include complex friction that the controller does not model:
+\begin{equation}
+    \tau_{\text{fric}}[i] = B_{v}[i] \dot{q}[i] + B_{c}[i] \cdot \text{sign}(\dot{q}[i])
+\end{equation}
+Viscous damping ranges from 0.02 to 0.08 Nm·s/rad. Coulomb friction ranges from 0.06 to 0.20 Nm, creating both speed-dependent and stick-slip effects that the disturbance observers must estimate.

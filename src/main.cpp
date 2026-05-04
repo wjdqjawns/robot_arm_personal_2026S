@@ -14,12 +14,14 @@
 #include <Eigen/Dense>
 #include <filesystem>
 #include <fstream>
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 #include <cmath>
+#include <thread>
 
 // ── YAML helpers ──────────────────────────────────────────────────────────────
 static arm::VecN yamlVec(const YAML::Node& n, int size, double def = 0.0)
@@ -47,16 +49,21 @@ static arm::ArmConfig loadArmConfig(const YAML::Node& root,
     cfg.dt        = env.model()->opt.timestep;
 
     // Resolve joint qpos/dof addresses and actuator IDs from names.
-    if (a["joint_names"] && a["joint_names"].IsSequence()) {
-        for (const auto& jn : a["joint_names"]) {
+    if (a["joint_names"] && a["joint_names"].IsSequence())
+    {
+        for (const auto& jn : a["joint_names"])
+        {
             int jid = env.jointId(jn.as<std::string>());
             cfg.qpos_ids.push_back(env.model()->jnt_qposadr[jid]);
             cfg.dof_ids.push_back(env.dofId(jid));
         }
     }
-    if (a["actuator_names"] && a["actuator_names"].IsSequence()) {
+    if (a["actuator_names"] && a["actuator_names"].IsSequence())
+    {
         for (const auto& an : a["actuator_names"])
+        {
             cfg.actuator_ids.push_back(env.actuatorId(an.as<std::string>()));
+        }
     }
     return cfg;
 }
@@ -119,9 +126,7 @@ static arm::MismatchedConfig loadMismatched(const YAML::Node& root)
     cfg.force_body    = m["force_body"].as<std::string>("");
     cfg.gravity_scale = m["gravity_scale"].as<double>(1.0);
     if (m["ext_force"] && m["ext_force"].IsSequence() && m["ext_force"].size() >= 3)
-        cfg.ext_force = Eigen::Vector3d(m["ext_force"][0].as<double>(),
-                                        m["ext_force"][1].as<double>(),
-                                        m["ext_force"][2].as<double>());
+        cfg.ext_force = Eigen::Vector3d(m["ext_force"][0].as<double>(), m["ext_force"][1].as<double>(), m["ext_force"][2].as<double>());
     return cfg;
 }
 
@@ -156,14 +161,13 @@ static arm::ForceObserverConfig loadFO(const YAML::Node& root)
 
 // ── Desired trajectory: sinusoidal tracking around home position ───────────────
 // q_des[i](t) = q_home[i] + amp[i]*sin(2*pi*freq*t + phase[i])
-static void computeDesired(const arm::VecN& q_home, double t,
-                            double freq_hz, double amp_rad,
-                            arm::VecN& q_des, arm::VecN& dq_des)
+static void computeDesired(const arm::VecN& q_home, double t, double freq_hz, double amp_rad, arm::VecN& q_des, arm::VecN& dq_des)
 {
     int n = static_cast<int>(q_home.size());
     q_des  = q_home;
     dq_des = arm::VecN::Zero(n);
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < n; ++i)
+    {
         // Staggered phases so joints move independently.
         double phase = i * (M_PI / 3.0);
         q_des[i]  = q_home[i] + amp_rad * std::sin(2.0 * M_PI * freq_hz * t + phase);
@@ -179,8 +183,12 @@ int main(int argc, char** argv)
     if (argc > 1) cfg_path = argv[1];
 
     YAML::Node root;
-    try { root = YAML::LoadFile(cfg_path); }
-    catch (const std::exception& e) {
+    try
+    {
+        root = YAML::LoadFile(cfg_path);
+    }
+    catch (const std::exception& e)
+    {
         std::cerr << "Cannot load " << cfg_path << ": " << e.what() << "\n";
         return 1;
     }
@@ -190,7 +198,8 @@ int main(int argc, char** argv)
     // the executable's parent directory (= project root when binary is in build/).
     namespace fs = std::filesystem;
     fs::path exe_root = fs::canonical("/proc/self/exe").parent_path().parent_path();
-    auto resolve = [&](const std::string& p) -> std::string {
+    auto resolve = [&](const std::string& p) -> std::string
+    {
         fs::path fp(p);
         if (fp.is_absolute()) return p;
         if (fs::exists(fp)) return fp.lexically_normal().string();
@@ -204,6 +213,8 @@ int main(int argc, char** argv)
     const bool   visualize = sim_node["visualize"].as<bool>(true);
     const std::string log_path = resolve(sim_node["log_path"].as<std::string>(
         "data/logs/piper_arm.csv"));
+    const bool realtime = sim_node["realtime"].as<bool>(true);
+    const double realtime_factor = sim_node["realtime_factor"].as<double>(1.0);
 
     // Ensure log directory exists.
     fs::create_directories(fs::path(log_path).parent_path());
@@ -215,6 +226,16 @@ int main(int argc, char** argv)
     // ── Build ArmConfig (resolves MuJoCo IDs) ────────────────────────────────
     arm::ArmConfig arm_cfg = loadArmConfig(root, env);
     int n = arm_cfg.n_joints;
+
+    int ee_body_id = -1;
+    try
+    {
+        ee_body_id = env.bodyId("link6");
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "[warn] Could not resolve EE body 'link6': " << e.what() << "\n";
+    }
 
     // ── Modules ──────────────────────────────────────────────────────────────
     arm::PDController    ctrl(loadPD(root, n));
@@ -248,9 +269,14 @@ int main(int argc, char** argv)
 
     // ── Visualizer ───────────────────────────────────────────────────────────
     std::unique_ptr<sim::ArmVisualizer> vis;
-    if (visualize) {
-        try { vis = std::make_unique<sim::ArmVisualizer>(env); }
-        catch (const std::exception& e) {
+    if (visualize)
+    {
+        try
+        {
+            vis = std::make_unique<sim::ArmVisualizer>(env);
+        }
+        catch (const std::exception& e)
+        {
             std::cerr << "[warn] Visualizer disabled: " << e.what() << "\n";
         }
     }
@@ -258,16 +284,15 @@ int main(int argc, char** argv)
     // ── Log file ──────────────────────────────────────────────────────────────
     std::ofstream log(log_path);
     if (!log) std::cerr << "[warn] Cannot open log: " << log_path << "\n";
-    if (log) {
+    if (log)
+    {
         log << "t";
         for (int i = 0; i < n; ++i) log << ",q" << i;
-        for (int i = 0; i < n; ++i) log << ",q_des" << i;
         for (int i = 0; i < n; ++i) log << ",dq" << i;
+        for (int i = 0; i < n; ++i) log << ",q_des" << i;
         for (int i = 0; i < n; ++i) log << ",tau_ctrl" << i;
-        for (int i = 0; i < n; ++i) log << ",tau_applied" << i;
-        for (int i = 0; i < n; ++i) log << ",d_hat_dob" << i;
-        for (int i = 0; i < n; ++i) log << ",d_hat_mo" << i;
-        for (int i = 0; i < n; ++i) log << ",d_hat_fo" << i;
+        for (int i = 0; i < n; ++i) log << ",d_hat" << i;
+        log << ",ee_pos_x,ee_pos_y,ee_pos_z,ee_des_pos_x,ee_des_pos_y,ee_des_pos_z";
         log << "\n";
     }
 
@@ -278,8 +303,12 @@ int main(int argc, char** argv)
               << " s  dt=" << dt << " s  n_joints=" << n << "\n"
               << "Active observer: " << active_obs << "\n";
 
+    using Clock = std::chrono::steady_clock;
+    const auto wall_start = Clock::now();
+
     // ── Main loop ─────────────────────────────────────────────────────────────
-    while (env.time() < duration) {
+    while (env.time() < duration)
+    {
         if (vis && vis->shouldClose()) break;
 
         double t = env.time();
@@ -312,6 +341,14 @@ int main(int argc, char** argv)
         arm::VecN q_des(n), dq_des(n);
         computeDesired(q_home, t, traj_freq, traj_amp, q_des, dq_des);
 
+        Eigen::Vector3d ee_pos = Eigen::Vector3d::Zero();
+        Eigen::Vector3d ee_des_pos = Eigen::Vector3d::Zero();
+        if (ee_body_id >= 0)
+        {
+            ee_pos = env.bodyPositionFromQ(true_state.q, arm_cfg.qpos_ids, ee_body_id);
+            ee_des_pos = env.bodyPositionFromQ(q_des, arm_cfg.qpos_ids, ee_body_id);
+        }
+
         // 8. Controller.
         tau_ctrl = ctrl.compute(meas, q_des, dq_des, d_hat);
 
@@ -328,21 +365,22 @@ int main(int argc, char** argv)
         env.step();
 
         // 13. Log.
-        if (log) {
+        if (log)
+        {
             log << t;
             for (int i = 0; i < n; ++i) log << "," << true_state.q[i];
-            for (int i = 0; i < n; ++i) log << "," << q_des[i];
             for (int i = 0; i < n; ++i) log << "," << true_state.dq[i];
+            for (int i = 0; i < n; ++i) log << "," << q_des[i];
             for (int i = 0; i < n; ++i) log << "," << tau_ctrl[i];
-            for (int i = 0; i < n; ++i) log << "," << tau_applied[i];
-            for (int i = 0; i < n; ++i) log << "," << dob.estimate()[i];
-            for (int i = 0; i < n; ++i) log << "," << mom_obs.estimate()[i];
-            for (int i = 0; i < n; ++i) log << "," << force_obs.estimate()[i];
+            for (int i = 0; i < n; ++i) log << "," << d_hat[i];
+            log << "," << ee_pos[0] << "," << ee_pos[1] << "," << ee_pos[2];
+            log << "," << ee_des_pos[0] << "," << ee_des_pos[1] << "," << ee_des_pos[2];
             log << "\n";
         }
 
         // 14. Render.
-        if (vis) {
+        if (vis)
+        {
             sim::ArmDisplay disp;
             disp.t           = t;
             disp.n_joints    = n;
@@ -352,7 +390,15 @@ int main(int argc, char** argv)
             disp.tau_ctrl    = tau_ctrl;
             disp.tau_applied = tau_applied;
             disp.d_hat       = d_hat;
+            disp.ee_pos      = ee_pos;
+            disp.ee_des_pos  = ee_des_pos;
             vis->render(disp);
+        }
+
+        if (realtime && dt > 0.0)
+        {
+            const auto target = wall_start + std::chrono::duration<double>(env.time() / realtime_factor);
+            std::this_thread::sleep_until(target);
         }
     }
 

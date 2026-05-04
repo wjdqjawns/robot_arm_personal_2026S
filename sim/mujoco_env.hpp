@@ -34,6 +34,15 @@ public:
     arm::ArmState getState(const std::vector<int>& qpos_ids,
                            const std::vector<int>& dof_ids) const;
 
+    // World-frame body pose from the current simulation state.
+    Eigen::Vector3d bodyPosition(int body_id) const;
+
+    // World-frame body position for a hypothetical joint configuration.
+    // q is expected to be in the same joint order as qpos_ids.
+    Eigen::Vector3d bodyPositionFromQ(const arm::VecN& q,
+                                      const std::vector<int>& qpos_ids,
+                                      int body_id) const;
+
     // Measured actuator torques: qfrc_actuator at the given DOF indices.
     arm::VecN getActuatorTorques(const std::vector<int>& dof_ids) const;
 
@@ -67,6 +76,7 @@ public:
 private:
     mjModel* m_{nullptr};
     mjData*  d_{nullptr};
+    mutable mjData* scratch_{nullptr};
 };
 
 } // namespace sim
