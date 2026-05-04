@@ -1,450 +1,362 @@
-#include "drone/controller/pid.hpp"
-#include "drone/controller/mpc.hpp"
-#include "drone/estimator/ekf.hpp"
-#include "drone/estimator/cf.hpp"
-#include "drone/trajectory.hpp"
-#include "drone/imu.hpp"
-
-#include "controller/arm_pd.hpp"
-#include "robot_arm/joint_noise.hpp"
+#include "arm/types.hpp"
+#include "arm/disturbance.hpp"
+#include "arm/sensor.hpp"
+#include "arm/friction.hpp"
+#include "arm/observer/dob.hpp"
+#include "arm/observer/momentum_observer.hpp"
+#include "arm/observer/force_observer.hpp"
+#include "arm/controller/pd_controller.hpp"
 
 #include "mujoco_env.hpp"
-#include "sensor_bridge.hpp"
 #include "visualizer.hpp"
 
 #include <yaml-cpp/yaml.h>
+#include <Eigen/Dense>
+#include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <vector>
+#include <cmath>
 
-// ---------------------------------------------------------------------------
-// Config helpers
-// ---------------------------------------------------------------------------
-static drone::Vec3 yamlVec3(const YAML::Node& n, drone::Vec3 def = drone::Vec3::Zero())
+// ── YAML helpers ──────────────────────────────────────────────────────────────
+static arm::VecN yamlVec(const YAML::Node& n, int size, double def = 0.0)
 {
-    if (!n || !n.IsSequence() || n.size() < 3) return def;
-    return {n[0].as<double>(), n[1].as<double>(), n[2].as<double>()};
+    arm::VecN v = arm::VecN::Constant(size, def);
+    if (!n || !n.IsSequence())
+    {
+        return v;
+    }
+    
+    for (int i = 0; i < std::min(size, static_cast<int>(n.size())); ++i)
+    {
+        v[i] = n[i].as<double>(def);
+    }
+    return v;
 }
 
-static drone::PidParams loadPid(const std::string& path)
+// ── Config loaders ────────────────────────────────────────────────────────────
+static arm::ArmConfig loadArmConfig(const YAML::Node& root,
+                                    sim::ArmEnv& env)
 {
-    drone::PidParams p;
-    try
-    {
-        YAML::Node y  = YAML::LoadFile(path)["pid"];
-        p.mass        = y["mass"].as<double>(p.mass);
-        p.gravity     = y["gravity"].as<double>(p.gravity);
-        p.arm_y       = y["arm_y"].as<double>(p.arm_y);
-        p.arm_x       = y["arm_x"].as<double>(p.arm_x);
-        p.kq          = y["kq"].as<double>(p.kq);
-        p.kp_pos      = yamlVec3(y["pos"]["kp"], p.kp_pos);
-        p.kd_pos      = yamlVec3(y["pos"]["kd"], p.kd_pos);
-        p.kp_att      = yamlVec3(y["att"]["kp"], p.kp_att);
-        p.kd_att      = yamlVec3(y["att"]["kd"], p.kd_att);
-        p.max_tilt    = y["max_tilt"].as<double>(p.max_tilt);
-        p.max_motor   = y["max_motor"].as<double>(p.max_motor);
-        p.min_motor   = y["min_motor"].as<double>(p.min_motor);
-    }
-    catch (...)
-    {
-        std::cerr << "[warn] Could not load " << path << ", using defaults\n";
-    }
-    return p;
-}
+    arm::ArmConfig cfg;
+    YAML::Node a = root["arm"];
+    cfg.n_joints  = a["n_joints"].as<int>(6);
+    cfg.dt        = env.model()->opt.timestep;
 
-static drone::MpcParams loadMpc(const std::string& path)
-{
-    drone::MpcParams p;
-    try
-    {
-        YAML::Node y = YAML::LoadFile(path)["mpc"];
-        if (!y) return p;
-        p.mass      = y["mass"].as<double>(p.mass);
-        p.gravity   = y["gravity"].as<double>(p.gravity);
-        p.arm_y     = y["arm_y"].as<double>(p.arm_y);
-        p.arm_x     = y["arm_x"].as<double>(p.arm_x);
-        p.kq        = y["kq"].as<double>(p.kq);
-        p.N         = y["horizon"].as<int>(p.N);
-        if (y["Q"] && y["Q"].IsSequence() && (int)y["Q"].size() == 6)
-            for (int i = 0; i < 6; ++i)
-                p.Q_diag[i] = y["Q"][i].as<double>(p.Q_diag[i]);
-        p.R_diag    = yamlVec3(y["R"], p.R_diag);
-        p.kp_att    = yamlVec3(y["att"]["kp"], p.kp_att);
-        p.kd_att    = yamlVec3(y["att"]["kd"], p.kd_att);
-        p.max_tilt  = y["max_tilt"].as<double>(p.max_tilt);
-        p.max_motor = y["max_motor"].as<double>(p.max_motor);
-        p.min_motor = y["min_motor"].as<double>(p.min_motor);
-    }
-    catch (...)
-    {
-        std::cerr << "[warn] Could not load MPC params from " << path << ", using defaults\n";
-    }
-    return p;
-}
-
-static drone::EkfParams loadEkf(const std::string& path)
-{
-    drone::EkfParams p;
-    try
-    {
-        YAML::Node y      = YAML::LoadFile(path)["ekf"];
-        p.proc_noise_pos  = y["proc_noise_pos"].as<double>(p.proc_noise_pos);
-        p.proc_noise_vel  = y["proc_noise_vel"].as<double>(p.proc_noise_vel);
-        p.meas_noise_pos  = y["meas_noise_pos"].as<double>(p.meas_noise_pos);
-    }
-    catch (...)
-    {
-        std::cerr << "[warn] Could not load EKF params from " << path << "\n";
-    }
-    return p;
-}
-
-static drone::CfParams loadCf(const std::string& path)
-{
-    drone::CfParams p;
-    try
-    {
-        p.alpha = YAML::LoadFile(path)["complementary_filter"]["alpha"].as<double>(p.alpha);
-    }
-    catch (...) {}
-    return p;
-}
-
-static drone::ImuNoiseParams loadImu(const std::string& path)
-{
-    drone::ImuNoiseParams p;
-    try
-    {
-        YAML::Node y   = YAML::LoadFile(path)["imu"];
-        p.accel_noise  = y["accel_noise"].as<double>(p.accel_noise);
-        p.gyro_noise   = y["gyro_noise"].as<double>(p.gyro_noise);
-        p.accel_bias   = y["accel_bias"].as<double>(p.accel_bias);
-        p.gyro_bias    = y["gyro_bias"].as<double>(p.gyro_bias);
-    }
-    catch (...) {}
-    return p;
-}
-
-// ---------------------------------------------------------------------------
-// ARM simulation mode
-// ---------------------------------------------------------------------------
-// doc: full YAML document root (for arm_pd, joint_noise, target_joints keys)
-// sim: the "simulation" sub-node
-static int runArmMode(const YAML::Node& doc, const YAML::Node& sim, sim::MujocoEnv& env)
-{
-    const std::string log_path  = sim["log_path"].as<std::string>("data/logs/arm_log.csv");
-    const double      duration  = sim["duration"].as<double>(10.0);
-    const bool        visualize = sim["visualize"].as<bool>(true);
-    const int         njoints   = sim["njoints"].as<int>(6);
-    const std::string ee_body   = sim["ee_body"].as<std::string>("link6");
-    const std::string trk_body  = sim["track_body"].as<std::string>("link_base");
-
-    // ── PD controller ──────────────────────────────────────────────────────
-    arm::ArmPdParams pd_p(njoints);
-    try
-    {
-        const YAML::Node& pd = doc["arm_pd"];
-        if (!pd) throw std::runtime_error("missing arm_pd");
-        pd_p.tau_max = pd["tau_max"].as<double>(pd_p.tau_max);
-        if (pd["Kp"] && pd["Kp"].IsSequence())
-            for (int i = 0; i < njoints && i < (int)pd["Kp"].size(); ++i)
-                pd_p.Kp[i] = pd["Kp"][i].as<double>(pd_p.Kp[i]);
-        if (pd["Kd"] && pd["Kd"].IsSequence())
-            for (int i = 0; i < njoints && i < (int)pd["Kd"].size(); ++i)
-                pd_p.Kd[i] = pd["Kd"][i].as<double>(pd_p.Kd[i]);
-    }
-    catch (...) { std::cerr << "[warn] arm_pd params not found, using defaults\n"; }
-
-    arm::ArmPdController ctrl(pd_p);
-
-    // ── Joint noise ────────────────────────────────────────────────────────
-    arm::JointNoiseParams noise_p;
-    bool noise_enabled = false;
-    try
-    {
-        const YAML::Node& jn = doc["joint_noise"];
-        noise_enabled        = jn["enabled"].as<bool>(false);
-        noise_p.pos_noise    = jn["pos_noise"].as<double>(noise_p.pos_noise);
-        noise_p.vel_noise    = jn["vel_noise"].as<double>(noise_p.vel_noise);
-        noise_p.tau_noise    = jn["tau_noise"].as<double>(noise_p.tau_noise);
-    }
-    catch (...) {}
-
-    arm::JointNoise noise(noise_p);
-
-    // ── Desired joint pose ─────────────────────────────────────────────────
-    Eigen::VectorXd q_des  = Eigen::VectorXd::Zero(njoints);
-    Eigen::VectorXd dq_des = Eigen::VectorXd::Zero(njoints);
-    try
-    {
-        const YAML::Node& tgt = doc["target_joints"];
-        if (tgt && tgt.IsSequence())
-            for (int i = 0; i < njoints && i < (int)tgt.size(); ++i)
-                q_des[i] = tgt[i].as<double>(0.0);
-    }
-    catch (...) {}
-
-    // ── Visualizer ─────────────────────────────────────────────────────────
-    std::unique_ptr<sim::Visualizer> vis;
-    if (visualize)
-    {
-        try { vis = std::make_unique<sim::Visualizer>(env, trk_body); }
-        catch (const std::exception& e)
-        {
-            std::cerr << "[warn] Visualizer disabled: " << e.what() << "\n";
+    // Resolve joint qpos/dof addresses and actuator IDs from names.
+    if (a["joint_names"] && a["joint_names"].IsSequence()) {
+        for (const auto& jn : a["joint_names"]) {
+            int jid = env.jointId(jn.as<std::string>());
+            cfg.qpos_ids.push_back(env.model()->jnt_qposadr[jid]);
+            cfg.dof_ids.push_back(env.dofId(jid));
         }
     }
-
-    // ── Log file ───────────────────────────────────────────────────────────
-    std::ofstream log(log_path);
-    if (!log) std::cerr << "[warn] Cannot open log: " << log_path << "\n";
-    else
-    {
-        log << "t";
-        for (int i = 0; i < njoints; ++i) log << ",q" << (i+1);
-        for (int i = 0; i < njoints; ++i) log << ",dq" << (i+1);
-        for (int i = 0; i < njoints; ++i) log << ",tau" << (i+1);
-        log << ",ee_x,ee_y,ee_z\n";
+    if (a["actuator_names"] && a["actuator_names"].IsSequence()) {
+        for (const auto& an : a["actuator_names"])
+            cfg.actuator_ids.push_back(env.actuatorId(an.as<std::string>()));
     }
-
-    // ── Reset to default pose ──────────────────────────────────────────────
-    env.reset();
-    std::cout << "ARM simulation started  duration=" << duration
-              << " s  dt=" << env.model()->opt.timestep << " s\n"
-              << "njoints=" << njoints << "  ee_body=" << ee_body << "\n";
-
-    // ── Main loop ──────────────────────────────────────────────────────────
-    while (env.time() < duration)
-    {
-        if (vis && vis->shouldClose()) break;
-
-        // 1. Sense
-        arm::ArmState raw_state(njoints);
-        raw_state.q  = env.getJointPos(njoints);
-        raw_state.dq = env.getJointVel(njoints);
-
-        // 2. Optionally corrupt sensor readings
-        const arm::ArmState& sensed = noise_enabled
-                                          ? noise.addSensorNoise(raw_state)
-                                          : raw_state;
-
-        // 3. Control
-        Eigen::VectorXd tau = ctrl.compute(sensed, q_des, dq_des);
-
-        // 4. Optionally add torque disturbance
-        if (noise_enabled) tau = noise.disturbTorque(tau);
-
-        // 5. Apply & step
-        env.setControls(tau);
-        env.step();
-
-        // 6. Log (ground-truth state)
-        const double t = env.time();
-        if (log)
-        {
-            drone::Vec3 ee = env.getBodyPos(ee_body);
-            log << t;
-            for (int i = 0; i < njoints; ++i) log << ',' << raw_state.q[i];
-            for (int i = 0; i < njoints; ++i) log << ',' << raw_state.dq[i];
-            for (int i = 0; i < njoints; ++i) log << ',' << tau[i];
-            log << ',' << ee.x() << ',' << ee.y() << ',' << ee.z() << '\n';
-        }
-
-        // 7. Render
-        if (vis)
-        {
-            sim::ArmDisplay disp;
-            disp.time    = t;
-            disp.state   = sensed;
-            disp.torques = tau;
-            disp.q_des   = q_des;
-            disp.ee_pos  = env.getBodyPos(ee_body);
-            vis->render(disp);
-        }
-    }
-
-    std::cout << "ARM simulation finished  t=" << env.time() << " s\n";
-    if (log) std::cout << "Log saved to " << log_path << "\n";
-    return 0;
+    return cfg;
 }
 
-// ---------------------------------------------------------------------------
+static arm::PDConfig loadPD(const YAML::Node& root, int n)
+{
+    arm::PDConfig cfg;
+    YAML::Node c = root["controller"];
+    cfg.Kp              = yamlVec(c["Kp"],      n, 40.0);
+    cfg.Kd              = yamlVec(c["Kd"],      n,  5.0);
+    cfg.tau_max         = yamlVec(c["tau_max"], n, 30.0);
+    cfg.use_observer    = c["use_observer"].as<bool>(false);
+    cfg.observer_gain   = c["observer_gain"].as<double>(1.0);
+    return cfg;
+}
+
+static arm::SensorConfig loadSensor(const YAML::Node& root, int n)
+{
+    arm::SensorConfig cfg;
+    YAML::Node s = root["sensor"];
+    cfg.enabled        = s["enabled"].as<bool>(true);
+    cfg.pos_noise_std  = yamlVec(s["pos_noise_std"], n, 0.0005);
+    cfg.vel_noise_std  = yamlVec(s["vel_noise_std"], n, 0.01);
+    cfg.tau_noise_std  = yamlVec(s["tau_noise_std"], n, 0.05);
+    cfg.pos_bias       = yamlVec(s["pos_bias"],      n, 0.0);
+    cfg.vel_bias       = yamlVec(s["vel_bias"],      n, 0.0);
+    cfg.drift_rate     = s["drift_rate"].as<double>(0.0);
+    cfg.delay_steps    = s["delay_steps"].as<int>(0);
+    return cfg;
+}
+
+static arm::FrictionConfig loadFriction(const YAML::Node& root, int n)
+{
+    arm::FrictionConfig cfg;
+    YAML::Node f = root["friction"];
+    cfg.enabled  = f["enabled"].as<bool>(false);
+    cfg.viscous  = yamlVec(f["viscous"], n, 0.0);
+    cfg.coulomb  = yamlVec(f["coulomb"], n, 0.0);
+    return cfg;
+}
+
+static arm::MatchedConfig loadMatched(const YAML::Node& root, int n)
+{
+    arm::MatchedConfig cfg;
+    YAML::Node m  = root["matched_disturbance"];
+    cfg.enabled   = m["enabled"].as<bool>(false);
+    cfg.constant  = yamlVec(m["constant"],   n, 0.0);
+    cfg.noise_std = yamlVec(m["noise_std"],  n, 0.0);
+    cfg.chirp_amp     = m["chirp_amp"].as<double>(0.0);
+    cfg.chirp_freq_hz = m["chirp_freq_hz"].as<double>(0.5);
+    return cfg;
+}
+
+static arm::MismatchedConfig loadMismatched(const YAML::Node& root)
+{
+    arm::MismatchedConfig cfg;
+    YAML::Node m      = root["mismatched_disturbance"];
+    cfg.enabled       = m["enabled"].as<bool>(false);
+    cfg.mass_scale    = m["mass_scale"].as<double>(1.0);
+    cfg.force_body    = m["force_body"].as<std::string>("");
+    cfg.gravity_scale = m["gravity_scale"].as<double>(1.0);
+    if (m["ext_force"] && m["ext_force"].IsSequence() && m["ext_force"].size() >= 3)
+        cfg.ext_force = Eigen::Vector3d(m["ext_force"][0].as<double>(),
+                                        m["ext_force"][1].as<double>(),
+                                        m["ext_force"][2].as<double>());
+    return cfg;
+}
+
+static arm::DOBConfig loadDOB(const YAML::Node& root, int n)
+{
+    arm::DOBConfig cfg;
+    YAML::Node d       = root["dob"];
+    cfg.enabled        = d["enabled"].as<bool>(true);
+    cfg.inertia_nominal = yamlVec(d["inertia_nominal"], n, 0.05);
+    cfg.damping_nominal = yamlVec(d["damping_nominal"], n, 0.0);
+    cfg.cutoff_hz      = d["cutoff_hz"].as<double>(5.0);
+    return cfg;
+}
+
+static arm::MomentumObserverConfig loadMO(const YAML::Node& root, int n)
+{
+    arm::MomentumObserverConfig cfg;
+    YAML::Node mo  = root["momentum_observer"];
+    cfg.enabled    = mo["enabled"].as<bool>(true);
+    cfg.Ko         = yamlVec(mo["Ko"], n, 20.0);
+    return cfg;
+}
+
+static arm::ForceObserverConfig loadFO(const YAML::Node& root)
+{
+    arm::ForceObserverConfig cfg;
+    YAML::Node fo  = root["force_observer"];
+    cfg.enabled    = fo["enabled"].as<bool>(true);
+    cfg.cutoff_hz  = fo["cutoff_hz"].as<double>(10.0);
+    return cfg;
+}
+
+// ── Desired trajectory: sinusoidal tracking around home position ───────────────
+// q_des[i](t) = q_home[i] + amp[i]*sin(2*pi*freq*t + phase[i])
+static void computeDesired(const arm::VecN& q_home, double t,
+                            double freq_hz, double amp_rad,
+                            arm::VecN& q_des, arm::VecN& dq_des)
+{
+    int n = static_cast<int>(q_home.size());
+    q_des  = q_home;
+    dq_des = arm::VecN::Zero(n);
+    for (int i = 0; i < n; ++i) {
+        // Staggered phases so joints move independently.
+        double phase = i * (M_PI / 3.0);
+        q_des[i]  = q_home[i] + amp_rad * std::sin(2.0 * M_PI * freq_hz * t + phase);
+        dq_des[i] = amp_rad * 2.0 * M_PI * freq_hz
+                    * std::cos(2.0 * M_PI * freq_hz * t + phase);
+    }
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv)
-// ---------------------------------------------------------------------------
 {
-    std::string sim_cfg = "config/sim/skydio_x2.yaml";
-    if (argc > 1) sim_cfg = argv[1];
+    std::string cfg_path = "config/sim/piper_arm.yaml";
+    if (argc > 1) cfg_path = argv[1];
 
-    YAML::Node doc, sim;
-    try
-    {
-        doc = YAML::LoadFile(sim_cfg);
-        sim = doc["simulation"];
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "Cannot load " << sim_cfg << ": " << e.what() << "\n";
+    YAML::Node root;
+    try { root = YAML::LoadFile(cfg_path); }
+    catch (const std::exception& e) {
+        std::cerr << "Cannot load " << cfg_path << ": " << e.what() << "\n";
         return 1;
     }
 
-    const std::string mode       = sim["mode"].as<std::string>("drone");
-    const std::string model_path = sim["model_path"].as<std::string>("asset/skydio_x2/scene.xml");
-
-    // --- sim objects ---
-    sim::MujocoEnv env(model_path);
-
-    // ── Dispatch to ARM mode ─────────────────────────────────────────────────
-    if (mode == "arm")
-        return runArmMode(doc, sim, env);
-
-    // ── DRONE mode (unchanged below) ─────────────────────────────────────────
-    sim::SensorBridge bridge(env);
-
-    const std::string log_path  = sim["log_path"].as<std::string>("data/logs/sim_log.csv");
-    const double      duration  = sim["duration"].as<double>(30.0);
-    const bool        visualize = sim["visualize"].as<bool>(true);
-    const std::string ctrl_type = sim["controller"].as<std::string>("pid");
-
-    const double dt = env.model()->opt.timestep; // 0.01 s from x2.xml
-
-    // --- load estimator / IMU params ---
-    drone::EkfParams       ekf_p = loadEkf("config/estimator_params.yaml");
-    drone::CfParams        cf_p  = loadCf("config/estimator_params.yaml");
-    drone::ImuNoiseParams  imu_p = loadImu("config/imu_params.yaml");
-
-    // --- create controller + motor-mix lambda ---
-    std::unique_ptr<drone::ControllerBase>         ctrl;
-    std::function<drone::Vec4(drone::ControlInput)> motor_mix;
-
-    if (ctrl_type == "mpc") {
-        drone::MpcParams mpc_p = loadMpc("config/controller_params.yaml");
-        mpc_p.dt = dt; // sync with actual sim timestep
-        ctrl      = std::make_unique<drone::MpcController>(mpc_p);
-        motor_mix = [mpc_p](const drone::ControlInput& cmd) {
-            return drone::mpcMotorMix(cmd, mpc_p);
-        };
-        std::cout << "Controller: MPC  (N=" << mpc_p.N
-                  << ", dt=" << mpc_p.dt << " s)\n";
-    } else {
-        drone::PidParams pid_p = loadPid("config/controller_params.yaml");
-        ctrl      = std::make_unique<drone::PidController>(pid_p);
-        motor_mix = [pid_p](const drone::ControlInput& cmd) {
-            return drone::motorMix(cmd, pid_p);
-        };
-        std::cout << "Controller: PID\n";
-    }
-
-    // --- create estimator objects ---
-    drone::EkfEstimator  ekf(ekf_p);
-    drone::CfEstimator   cf(cf_p);
-    drone::Imu           imu_model(imu_p);
-
-    // --- trajectory: takeoff → 1 m hover → circle → land ---
-    drone::Vec3 home(0.0, 0.0, 0.3);
-    drone::Vec3 cruise(0.0, 0.0, 1.0);
-
-    std::vector<drone::Waypoint> wps = {
-        {home,   drone::Vec3::Zero(),  0.0},
-        {cruise, drone::Vec3::Zero(),  5.0},
-        {cruise, drone::Vec3::Zero(), 10.0},
+    // Resolve relative paths so the binary can be run from build/ or project root.
+    // Strategy: try CWD first; if the file doesn't exist there, try relative to
+    // the executable's parent directory (= project root when binary is in build/).
+    namespace fs = std::filesystem;
+    fs::path exe_root = fs::canonical("/proc/self/exe").parent_path().parent_path();
+    auto resolve = [&](const std::string& p) -> std::string {
+        fs::path fp(p);
+        if (fp.is_absolute()) return p;
+        if (fs::exists(fp)) return fp.lexically_normal().string();
+        return (exe_root / fp).lexically_normal().string();
     };
-    auto circ = drone::Trajectory::circle(cruise, 1.0, 0.0, 8.0, 15.0);
-    for (int i = 0; i <= 48; ++i) {
-        double t = 15.0 * i / 48;
-        wps.push_back({circ.getPosition(t), circ.getVelocity(t), 10.0 + t});
-    }
-    wps.push_back({home, drone::Vec3::Zero(), duration});
-    drone::Trajectory traj(wps);
 
-    // --- optional visualizer ---
-    std::unique_ptr<sim::Visualizer> vis;
+    YAML::Node sim_node = root["simulation"];
+    const std::string model_path = resolve(sim_node["model_path"].as<std::string>(
+        "model/piper_torque_scene.xml"));
+    const double duration  = sim_node["duration"].as<double>(20.0);
+    const bool   visualize = sim_node["visualize"].as<bool>(true);
+    const std::string log_path = resolve(sim_node["log_path"].as<std::string>(
+        "data/logs/piper_arm.csv"));
+
+    // Ensure log directory exists.
+    fs::create_directories(fs::path(log_path).parent_path());
+
+    // ── Simulation environment ───────────────────────────────────────────────
+    sim::ArmEnv env(model_path);
+    env.resetToKeyframe(0);
+
+    // ── Build ArmConfig (resolves MuJoCo IDs) ────────────────────────────────
+    arm::ArmConfig arm_cfg = loadArmConfig(root, env);
+    int n = arm_cfg.n_joints;
+
+    // ── Modules ──────────────────────────────────────────────────────────────
+    arm::PDController    ctrl(loadPD(root, n));
+    arm::JointSensor     sensor(loadSensor(root, n), n);
+    arm::FrictionModel   friction(loadFriction(root, n));
+    arm::DisturbanceManager disturbance(loadMatched(root, n),
+                                        loadMismatched(root));
+    disturbance.saveNominalState(env.model());
+
+    arm::DOB                dob(loadDOB(root, n));
+    arm::MomentumObserver   mom_obs(loadMO(root, n));
+    arm::ForceObserver      force_obs(loadFO(root));
+    dob.reset(n);
+    mom_obs.reset(n);
+    force_obs.reset(n);
+
+    // ── Select which observer feeds the controller ────────────────────────────
+    // "dob" | "momentum" | "force"  (config key: active_observer)
+    const std::string active_obs = root["active_observer"].as<std::string>("dob");
+
+    // ── Home position from keyframe ───────────────────────────────────────────
+    arm::VecN q_home(n);
+    for (int i = 0; i < n; ++i)
+        q_home[i] = env.data()->qpos[arm_cfg.qpos_ids[i]];
+
+    YAML::Node traj = root["trajectory"];
+    double traj_amp  = traj["amplitude_rad"].as<double>(0.0);
+    double traj_freq = traj["frequency_hz"].as<double>(0.1);
+
+    const double dt = arm_cfg.dt;
+
+    // ── Visualizer ───────────────────────────────────────────────────────────
+    std::unique_ptr<sim::ArmVisualizer> vis;
     if (visualize) {
-        try { vis = std::make_unique<sim::Visualizer>(env); }
+        try { vis = std::make_unique<sim::ArmVisualizer>(env); }
         catch (const std::exception& e) {
             std::cerr << "[warn] Visualizer disabled: " << e.what() << "\n";
         }
     }
 
-    // --- log file ---
+    // ── Log file ──────────────────────────────────────────────────────────────
     std::ofstream log(log_path);
     if (!log) std::cerr << "[warn] Cannot open log: " << log_path << "\n";
-    else log << "t,px,py,pz,vx,vy,vz,roll,pitch,yaw,"
-                "thrust,tau_x,tau_y,tau_z,m1,m2,m3,m4,"
-                "est_px,est_py,est_pz,est_vx,est_vy,est_vz\n";
+    if (log) {
+        log << "t";
+        for (int i = 0; i < n; ++i) log << ",q" << i;
+        for (int i = 0; i < n; ++i) log << ",q_des" << i;
+        for (int i = 0; i < n; ++i) log << ",dq" << i;
+        for (int i = 0; i < n; ++i) log << ",tau_ctrl" << i;
+        for (int i = 0; i < n; ++i) log << ",tau_applied" << i;
+        for (int i = 0; i < n; ++i) log << ",d_hat_dob" << i;
+        for (int i = 0; i < n; ++i) log << ",d_hat_mo" << i;
+        for (int i = 0; i < n; ++i) log << ",d_hat_fo" << i;
+        log << "\n";
+    }
 
-    // --- reset to hover keyframe ---
-    env.resetToKeyframe(0);
-    drone::DroneState gt0 = bridge.getGroundTruth();
-    ekf.reset(gt0);
-    cf.reset(gt0);
+    arm::VecN tau_ctrl   = arm::VecN::Zero(n);
+    arm::VecN tau_applied = arm::VecN::Zero(n);
 
     std::cout << "Simulation started  duration=" << duration
-              << " s  dt=" << dt << " s\n";
+              << " s  dt=" << dt << " s  n_joints=" << n << "\n"
+              << "Active observer: " << active_obs << "\n";
 
-    // -----------------------------------------------------------------------
-    // Main loop
-    // -----------------------------------------------------------------------
+    // ── Main loop ─────────────────────────────────────────────────────────────
     while (env.time() < duration) {
         if (vis && vis->shouldClose()) break;
 
-        // 1. Sense
-        drone::IMUData raw   = bridge.getRawIMU(dt);
-        drone::IMUData noisy = imu_model.process(raw);
-
-        // 2. Estimate: CF attitude → EKF position/velocity
-        cf.update(noisy);
-        drone::DroneState cf_state = cf.getState();
-        ekf.setOrientation(cf_state.quat, cf_state.ang_vel);
-        ekf.update(noisy);
-
-        drone::DroneState est = ekf.getState();
-        est.quat    = cf_state.quat;
-        est.ang_vel = cf_state.ang_vel;
-
-        // 3. Control
         double t = env.time();
-        drone::ControlInput cmd    = ctrl->compute(est,
-                                                   traj.getPosition(t),
-                                                   traj.getVelocity(t));
-        drone::Vec4         motors = motor_mix(cmd);
 
-        // 4. Apply & step
-        env.setActuators(motors);
+        // 1. Ground-truth state from MuJoCo.
+        arm::ArmState true_state = env.getState(arm_cfg.qpos_ids, arm_cfg.dof_ids);
+        true_state.tau_meas      = env.getActuatorTorques(arm_cfg.dof_ids);
+
+        // 2. Apply mismatched disturbance (external forces, mass/gravity changes).
+        disturbance.applyMismatched(env.model(), env.data());
+
+        // 3. Sensor layer — noisy measurement.
+        arm::ArmState meas = sensor.read(true_state, dt);
+
+        // 4. Mass matrix for observers (computed after last step).
+        arm::MatN M_q = env.getMassMatrix();
+
+        // 5. Update all observers.
+        dob.update(meas, tau_ctrl, M_q, dt);
+        mom_obs.update(meas, tau_ctrl, M_q, dt);
+        force_obs.update(meas, tau_ctrl, M_q, dt);
+
+        // 6. Select active observer output for the controller.
+        arm::VecN d_hat = arm::VecN::Zero(n);
+        if      (active_obs == "momentum") d_hat = mom_obs.estimate().head(n);
+        else if (active_obs == "force")    d_hat = force_obs.estimate().head(n);
+        else                               d_hat = dob.estimate().head(n);
+
+        // 7. Desired trajectory.
+        arm::VecN q_des(n), dq_des(n);
+        computeDesired(q_home, t, traj_freq, traj_amp, q_des, dq_des);
+
+        // 8. Controller.
+        tau_ctrl = ctrl.compute(meas, q_des, dq_des, d_hat);
+
+        // 9. True friction (unknown to controller — represents real plant).
+        arm::VecN tau_fric = friction.compute(true_state.dq);
+
+        // 10. Matched disturbance (noise, constant bias, chirp) on top of friction.
+        tau_applied = disturbance.applyMatched(tau_ctrl + tau_fric, t);
+
+        // 11. Inject torques into MuJoCo motor actuators.
+        env.applyTorques(tau_applied, arm_cfg.actuator_ids);
+
+        // 12. Step simulation.
         env.step();
 
-        // 5. Log
-        drone::DroneState gt = bridge.getGroundTruth();
+        // 13. Log.
         if (log) {
-            drone::Vec3 eul = drone::quatToEuler(gt.quat);
-            log << t           << ',' << gt.pos.x()  << ',' << gt.pos.y()  << ',' << gt.pos.z()
-                               << ',' << gt.vel.x()  << ',' << gt.vel.y()  << ',' << gt.vel.z()
-                               << ',' << eul.x()     << ',' << eul.y()     << ',' << eul.z()
-                               << ',' << cmd.thrust  << ',' << cmd.torque.x() << ','
-                                                               << cmd.torque.y() << ','
-                                                               << cmd.torque.z()
-                               << ',' << motors[0]   << ',' << motors[1]   << ','
-                                      << motors[2]   << ',' << motors[3]
-                               << ',' << est.pos.x() << ',' << est.pos.y() << ',' << est.pos.z()
-                               << ',' << est.vel.x() << ',' << est.vel.y() << ',' << est.vel.z()
-                               << '\n';
+            log << t;
+            for (int i = 0; i < n; ++i) log << "," << true_state.q[i];
+            for (int i = 0; i < n; ++i) log << "," << q_des[i];
+            for (int i = 0; i < n; ++i) log << "," << true_state.dq[i];
+            for (int i = 0; i < n; ++i) log << "," << tau_ctrl[i];
+            for (int i = 0; i < n; ++i) log << "," << tau_applied[i];
+            for (int i = 0; i < n; ++i) log << "," << dob.estimate()[i];
+            for (int i = 0; i < n; ++i) log << "," << mom_obs.estimate()[i];
+            for (int i = 0; i < n; ++i) log << "," << force_obs.estimate()[i];
+            log << "\n";
         }
 
-        // 6. Render
+        // 14. Render.
         if (vis) {
-            sim::SimDisplay disp;
-            disp.time         = t;
-            disp.ground_truth = gt;
-            disp.estimated    = est;
-            disp.cmd          = cmd;
-            disp.motors       = motors;
-            disp.target_pos   = traj.getPosition(t);
+            sim::ArmDisplay disp;
+            disp.t           = t;
+            disp.n_joints    = n;
+            disp.true_state  = true_state;
+            disp.meas_state  = meas;
+            disp.q_des       = q_des;
+            disp.tau_ctrl    = tau_ctrl;
+            disp.tau_applied = tau_applied;
+            disp.d_hat       = d_hat;
             vis->render(disp);
         }
     }
 
     std::cout << "Simulation finished  t=" << env.time() << " s\n";
-    if (log) std::cout << "Log saved to " << log_path << "\n";
+    if (log) std::cout << "Log: " << log_path << "\n";
     return 0;
 }

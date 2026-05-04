@@ -1,138 +1,127 @@
 #include "mujoco_env.hpp"
 #include <stdexcept>
-#include <algorithm>
-#include <string>
+#include <cstring>
 
-namespace sim
+namespace sim {
+
+ArmEnv::ArmEnv(const std::string& xml_path)
 {
-    MujocoEnv::MujocoEnv(const std::string& xml_path)
-    {
-        // Mesh decoders (OBJ, STL) live in separate plugin .so files in MuJoCo 3.x.
-        // They must be loaded before mj_loadXML; calling this repeatedly is safe.
-        static bool plugins_loaded = false;
-        if (!plugins_loaded)
-        {
+    static bool plugins_loaded = false;
+    if (!plugins_loaded) {
 #ifdef MUJOCO_PLUGIN_DIR
-            mj_loadAllPluginLibraries(MUJOCO_PLUGIN_DIR, nullptr);
+        mj_loadAllPluginLibraries(MUJOCO_PLUGIN_DIR, nullptr);
 #endif
-            plugins_loaded = true;
-        }
-
-        char err[1000] = {};
-        m_ = mj_loadXML(xml_path.c_str(), nullptr, err, sizeof(err));
-        if (!m_) throw std::runtime_error(std::string("mj_loadXML: ") + err);
-        d_ = mj_makeData(m_);
+        plugins_loaded = true;
     }
 
-    MujocoEnv::~MujocoEnv()
-    {
-        mj_deleteData(d_);
-        mj_deleteModel(m_);
-    }
+    char err[1000] = {};
+    m_ = mj_loadXML(xml_path.c_str(), nullptr, err, sizeof(err));
+    if (!m_) throw std::runtime_error(std::string("mj_loadXML: ") + err);
+    d_ = mj_makeData(m_);
+}
 
-    void MujocoEnv::step()
-    {
-        mj_step(m_, d_);
-    }
+ArmEnv::~ArmEnv()
+{
+    mj_deleteData(d_);
+    mj_deleteModel(m_);
+}
 
-    void MujocoEnv::resetToKeyframe(int key_id)
-    {
-        mj_resetDataKeyframe(m_, d_, key_id);
-        mj_forward(m_, d_);
-    }
+void ArmEnv::step()
+{
+    mj_step(m_, d_);
+    // Clear per-step wrench so callers can accumulate fresh each tick.
+    mju_zero(d_->xfrc_applied, 6 * m_->nbody);
+}
 
-    void MujocoEnv::setActuators(const drone::Vec4& f)
-    {
-        for (int i = 0; i < 4; ++i)
-        {
-            d_->ctrl[i] = std::clamp(f[i], 0.0, 13.0);
-        }
-    }
+void ArmEnv::resetToKeyframe(int key_id)
+{
+    mj_resetDataKeyframe(m_, d_, key_id);
+    mj_forward(m_, d_);
+}
 
-    drone::Vec3 MujocoEnv::getPosition() const
-    {
-        return {d_->qpos[0], d_->qpos[1], d_->qpos[2]};
+arm::ArmState ArmEnv::getState(const std::vector<int>& qpos_ids,
+                               const std::vector<int>& dof_ids) const
+{
+    int n = static_cast<int>(dof_ids.size());
+    arm::ArmState s = arm::ArmState::zero(n);
+    s.t = d_->time;
+    for (int i = 0; i < n; ++i) {
+        s.q[i]  = d_->qpos[qpos_ids[i]];
+        s.dq[i] = d_->qvel[dof_ids[i]];
     }
+    return s;
+}
 
-    drone::Vec3 MujocoEnv::getVelocity() const
-    {
-        return {d_->qvel[0], d_->qvel[1], d_->qvel[2]};
-    }
+arm::VecN ArmEnv::getActuatorTorques(const std::vector<int>& dof_ids) const
+{
+    int n = static_cast<int>(dof_ids.size());
+    arm::VecN tau(n);
+    for (int i = 0; i < n; ++i)
+        tau[i] = d_->qfrc_actuator[dof_ids[i]];
+    return tau;
+}
 
-    drone::Quat MujocoEnv::getOrientation() const
-    {
-        return drone::Quat(d_->qpos[3], d_->qpos[4], d_->qpos[5], d_->qpos[6]);
-    }
+void ArmEnv::applyTorques(const arm::VecN& tau,
+                          const std::vector<int>& actuator_ids)
+{
+    int n = static_cast<int>(actuator_ids.size());
+    for (int i = 0; i < n; ++i)
+        d_->ctrl[actuator_ids[i]] = tau[i];
+}
 
-    drone::Vec3 MujocoEnv::getAngularVelocity() const
-    {
-        return {d_->qvel[3], d_->qvel[4], d_->qvel[5]};
-    }
+void ArmEnv::setBodyWrench(int body_id,
+                           const Eigen::Vector3d& force,
+                           const Eigen::Vector3d& torque)
+{
+    if (body_id < 0 || body_id >= m_->nbody) return;
+    double* xfrc = &d_->xfrc_applied[6 * body_id];
+    xfrc[0] += force.x();
+    xfrc[1] += force.y();
+    xfrc[2] += force.z();
+    xfrc[3] += torque.x();
+    xfrc[4] += torque.y();
+    xfrc[5] += torque.z();
+}
 
-    drone::Vec3 MujocoEnv::getSensorGyro() const
-    {
-        return {d_->sensordata[0], d_->sensordata[1], d_->sensordata[2]};
-    }
+arm::MatN ArmEnv::getMassMatrix() const
+{
+    int nv = m_->nv;
+    std::vector<mjtNum> Mfull(nv * nv);
+    mj_fullM(m_, Mfull.data(), d_->qM);
+    arm::MatN M = arm::MatN::Zero(nv, nv);
+    for (int r = 0; r < nv; ++r)
+        for (int c = 0; c < nv; ++c)
+            M(r, c) = Mfull[r * nv + c];
+    return M;
+}
 
-    drone::Vec3 MujocoEnv::getSensorAccel() const
-    {
-        return {d_->sensordata[3], d_->sensordata[4], d_->sensordata[5]};
-    }
+int ArmEnv::bodyId(const std::string& name) const
+{
+    int id = mj_name2id(m_, mjOBJ_BODY, name.c_str());
+    if (id < 0)
+        throw std::runtime_error("ArmEnv: body not found: " + name);
+    return id;
+}
 
-    drone::Quat MujocoEnv::getSensorQuat() const
-    {
-        return drone::Quat(d_->sensordata[6], d_->sensordata[7], d_->sensordata[8], d_->sensordata[9]);
-    }
+int ArmEnv::jointId(const std::string& name) const
+{
+    int id = mj_name2id(m_, mjOBJ_JOINT, name.c_str());
+    if (id < 0)
+        throw std::runtime_error("ArmEnv: joint not found: " + name);
+    return id;
+}
 
-    // ── Generic joint-space methods ───────────────────────────────────────────
+int ArmEnv::dofId(int joint_id) const
+{
+    return m_->jnt_dofadr[joint_id];
+}
 
-    void MujocoEnv::reset()
-    {
-        mj_resetData(m_, d_);
-        mj_forward(m_, d_);
-    }
+int ArmEnv::actuatorId(const std::string& name) const
+{
+    int id = mj_name2id(m_, mjOBJ_ACTUATOR, name.c_str());
+    if (id < 0)
+        throw std::runtime_error("ArmEnv: actuator not found: " + name);
+    return id;
+}
 
-    Eigen::VectorXd MujocoEnv::getJointPos(int nq, int offset) const
-    {
-        Eigen::VectorXd q(nq);
-        for (int i = 0; i < nq; ++i)
-            q[i] = d_->qpos[offset + i];
-        return q;
-    }
-
-    Eigen::VectorXd MujocoEnv::getJointVel(int nv, int offset) const
-    {
-        Eigen::VectorXd dq(nv);
-        for (int i = 0; i < nv; ++i)
-            dq[i] = d_->qvel[offset + i];
-        return dq;
-    }
-
-    void MujocoEnv::setControl(int index, double value)
-    {
-        d_->ctrl[index] = value;
-    }
-
-    void MujocoEnv::setControls(const Eigen::VectorXd& u)
-    {
-        const int n = std::min<int>(static_cast<int>(u.size()), m_->nu);
-        for (int i = 0; i < n; ++i)
-            d_->ctrl[i] = u[i];
-    }
-
-    drone::Vec3 MujocoEnv::getBodyPos(const std::string& name) const
-    {
-        int id = mj_name2id(m_, mjOBJ_BODY, name.c_str());
-        if (id < 0) return drone::Vec3::Zero();
-        return {d_->xpos[id * 3], d_->xpos[id * 3 + 1], d_->xpos[id * 3 + 2]};
-    }
-
-    drone::Quat MujocoEnv::getBodyQuat(const std::string& name) const
-    {
-        int id = mj_name2id(m_, mjOBJ_BODY, name.c_str());
-        if (id < 0) return drone::Quat::Identity();
-        // MuJoCo stores xquat as [w, x, y, z]
-        return drone::Quat(d_->xquat[id * 4],     d_->xquat[id * 4 + 1],
-                           d_->xquat[id * 4 + 2], d_->xquat[id * 4 + 3]);
-    }
 } // namespace sim

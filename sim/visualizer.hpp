@@ -1,122 +1,73 @@
 #pragma once
 #include "mujoco_env.hpp"
-#include "drone/utils.hpp"
-#include "robot_arm/state.hpp"
+#include "arm/types.hpp"
 #include <mujoco/mujoco.h>
 #include <GLFW/glfw3.h>
-#include <vector>
 #include <deque>
+#include <string>
 
-namespace sim
-{
-    // All per-frame data the visualizer needs to paint state overlays.
-    struct SimDisplay
-    {
-        double              time{0};
-        drone::DroneState   ground_truth;   // from MuJoCo qpos/qvel
-        drone::DroneState   estimated;      // from EKF + CF
-        drone::ControlInput cmd;
-        drone::Vec4         motors{drone::Vec4::Zero()};
-        drone::Vec3         target_pos{drone::Vec3::Zero()};
-    };
+namespace sim {
 
-    // History buffer for plotting
-    struct PlotHistory
-    {
-        std::deque<float> time_vals;
-        std::deque<float> pos_x, pos_y, pos_z;
-        std::deque<float> vel_x, vel_y, vel_z;
-        std::deque<float> roll, pitch, yaw;
-        std::deque<float> motor1, motor2, motor3, motor4;
-        std::deque<float> thrust;
-        
-        static constexpr int MAX_HISTORY = 1000; // ~10 seconds at 100 Hz
-        
-        void push(const SimDisplay& d) {
-            drone::Vec3 eul = drone::quatToEuler(d.ground_truth.quat);
-            
-            time_vals.push_back(d.time);
-            pos_x.push_back(d.ground_truth.pos.x());
-            pos_y.push_back(d.ground_truth.pos.y());
-            pos_z.push_back(d.ground_truth.pos.z());
-            vel_x.push_back(d.ground_truth.vel.x());
-            vel_y.push_back(d.ground_truth.vel.y());
-            vel_z.push_back(d.ground_truth.vel.z());
-            roll.push_back(eul.x() * 180.0 / M_PI);
-            pitch.push_back(eul.y() * 180.0 / M_PI);
-            yaw.push_back(eul.z() * 180.0 / M_PI);
-            motor1.push_back(d.motors[0]);
-            motor2.push_back(d.motors[1]);
-            motor3.push_back(d.motors[2]);
-            motor4.push_back(d.motors[3]);
-            thrust.push_back(d.cmd.thrust);
-            
-            // Keep history size bounded
-            while (time_vals.size() > MAX_HISTORY)
-            {
-                time_vals.pop_front();
-                pos_x.pop_front(); pos_y.pop_front(); pos_z.pop_front();
-                vel_x.pop_front(); vel_y.pop_front(); vel_z.pop_front();
-                roll.pop_front(); pitch.pop_front(); yaw.pop_front();
-                motor1.pop_front(); motor2.pop_front(); 
-                motor3.pop_front(); motor4.pop_front();
-                thrust.pop_front();
-            }
-        }
-    };
+// Per-frame snapshot passed from the main loop to the visualizer.
+struct ArmDisplay {
+    double         t{0};
+    int            n_joints{6};
+    arm::ArmState  true_state;    // ground truth from MuJoCo
+    arm::ArmState  meas_state;    // noisy sensor measurement
+    arm::VecN      q_des;         // desired joint positions
+    arm::VecN      tau_ctrl;      // controller output (before matched disturbance)
+    arm::VecN      tau_applied;   // actual torque injected into MuJoCo
+    arm::VecN      d_hat;         // disturbance estimate from active observer
+};
 
-    // Per-frame display data for the ARM simulation mode.
-    struct ArmDisplay
-    {
-        double          time{0};
-        arm::ArmState   state;       // noisy sensed state
-        Eigen::VectorXd torques;     // commanded torques [N·m]
-        Eigen::VectorXd q_des;       // desired joint positions [rad]
-        drone::Vec3     ee_pos{drone::Vec3::Zero()};  // end-effector position
-    };
+// Thin history ring for the real-time plot (joint 0 only for clarity).
+struct ArmPlotHistory {
+    static constexpr int MAX = 800;
 
-    class Visualizer
-    {
-    public:
-        // track_body: MuJoCo body name for the camera to follow.
-        // Defaults to "x2" (drone) — pass "link_base" or similar for an arm.
-        explicit Visualizer(MujocoEnv& env,
-                            const std::string& track_body = "x2",
-                            int width = 1280, int height = 720);
-        ~Visualizer();
+    std::deque<float> t_vals;
+    std::deque<float> q_true;
+    std::deque<float> q_des;
+    std::deque<float> q_err;
+    std::deque<float> tau_ctrl;
+    std::deque<float> d_hat;
 
-        Visualizer(const Visualizer&)            = delete;
-        Visualizer& operator=(const Visualizer&) = delete;
+    void push(const ArmDisplay& d);
+};
 
-        bool shouldClose() const;
-        void render(const SimDisplay& d);
-        void render(const ArmDisplay& d);
+class ArmVisualizer {
+public:
+    explicit ArmVisualizer(ArmEnv& env, int width = 1280, int height = 720);
+    ~ArmVisualizer();
 
-    private:
-        MujocoEnv&  env_;
-        GLFWwindow* window_{nullptr};
-        mjvCamera   cam_{};
-        mjvOption   opt_{};
-        mjvScene    scn_{};
-        mjrContext  con_{};
+    ArmVisualizer(const ArmVisualizer&)            = delete;
+    ArmVisualizer& operator=(const ArmVisualizer&) = delete;
 
-        bool   btn_left_{false}, btn_right_{false};
-        double last_x_{0}, last_y_{0};
-        
-        // History tracking for plots
-        PlotHistory history_;
-        mjvFigure   figure_{};
+    bool shouldClose() const;
+    void render(const ArmDisplay& d);
 
-        // Singleton pointer used by static GLFW callbacks.
-        static Visualizer* instance_;
+private:
+    ArmEnv&     env_;
+    GLFWwindow* window_{nullptr};
+    mjvCamera   cam_{};
+    mjvOption   opt_{};
+    mjvScene    scn_{};
+    mjrContext  con_{};
+    mjvFigure   fig_{};
 
-        static void keyCb(GLFWwindow*, int key, int, int action, int);
-        static void scrollCb(GLFWwindow*, double, double yoffset);
-        static void mouseBtnCb(GLFWwindow*, int button, int action, int);
-        static void cursorCb(GLFWwindow*, double xpos, double ypos);
-        
-        // Rendering helpers
-        void renderTextOverlays(const SimDisplay& d, int W, int H, int y_offset);
-        void updateFigure(const SimDisplay& d);
-    };
+    ArmPlotHistory history_;
+
+    bool   btn_left_{false}, btn_right_{false};
+    double last_x_{0}, last_y_{0};
+
+    static ArmVisualizer* instance_;
+
+    static void keyCb(GLFWwindow*, int key, int, int action, int);
+    static void scrollCb(GLFWwindow*, double, double yoffset);
+    static void mouseBtnCb(GLFWwindow*, int button, int action, int);
+    static void cursorCb(GLFWwindow*, double xpos, double ypos);
+
+    void renderOverlay(const ArmDisplay& d, int W, int H);
+    void updateFigure(const ArmDisplay& d);
+};
+
 } // namespace sim

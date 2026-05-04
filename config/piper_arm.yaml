@@ -1,0 +1,81 @@
+# ── Piper arm research simulation config ──────────────────────────────────────
+# Pass this file as the first argument:  ./arm_sim config/sim/piper_arm.yaml
+
+simulation:
+  model_path: model/piper_torque_scene.xml
+  duration:   30.0
+  visualize:  true
+  log_path:   data/logs/piper_arm.csv
+
+arm:
+  n_joints: 6
+  joint_names:    [joint1, joint2, joint3, joint4, joint5, joint6]
+  actuator_names: [motor1, motor2, motor3, motor4, motor5, motor6]
+
+# ── Controller ────────────────────────────────────────────────────────────────
+controller:
+  Kp:           [80,  80,  60,  40,  20,  20]   # [Nm/rad]
+  Kd:           [5.0, 5.0, 4.0, 3.0, 1.5, 1.5] # [Nm/(rad/s)]
+  tau_max:      [18,  18,  18,  9,   7,   7]    # [Nm]  (< motor forcerange)
+  use_observer: true
+  observer_gain: 0.8   # feedforward scale on d_hat (0 = pure PD)
+
+# "dob" | "momentum" | "force"  — which observer output feeds the controller
+active_observer: dob
+
+# ── Desired trajectory ────────────────────────────────────────────────────────
+# Sinusoidal motion around home: q_des[i](t) = q_home[i] + A*sin(2*pi*f*t + phase_i)
+# Set amplitude_rad: 0 for pure hold-home (disturbance rejection only)
+trajectory:
+  amplitude_rad: 0.15
+  frequency_hz:  0.2
+
+# ── Sensor model ──────────────────────────────────────────────────────────────
+sensor:
+  enabled:       true
+  pos_noise_std: [5e-4, 5e-4, 5e-4, 5e-4, 1e-3, 1e-3]  # [rad]
+  vel_noise_std: [0.01, 0.01, 0.01, 0.01, 0.02, 0.02]  # [rad/s]
+  tau_noise_std: [0.05, 0.05, 0.05, 0.03, 0.03, 0.03]  # [Nm]
+  pos_bias:      [0, 0, 0, 0, 0, 0]
+  vel_bias:      [0, 0, 0, 0, 0, 0]
+  drift_rate:    0.0001  # [rad/sqrt(s)] random-walk per joint
+  delay_steps:   0
+
+# ── True friction (unknown to controller — the DOB/MO should estimate this) ──
+friction:
+  enabled: true
+  viscous: [0.08, 0.08, 0.06, 0.04, 0.02, 0.02]   # [Nm/(rad/s)]
+  coulomb: [0.20, 0.20, 0.15, 0.10, 0.06, 0.06]   # [Nm]
+
+# ── Matched disturbance: injected into tau channel ───────────────────────────
+matched_disturbance:
+  enabled:      false
+  constant:     [0, 0, 0, 0, 0, 0]   # [Nm] — constant torque offset per joint
+  noise_std:    [0.02, 0.02, 0.02, 0.01, 0.01, 0.01]  # actuator noise std
+  chirp_amp:    0.0        # [Nm] — sinusoidal chirp amplitude (set > 0 to test)
+  chirp_freq_hz: 0.5
+
+# ── Mismatched disturbance: applied to MuJoCo physics ───────────────────────
+mismatched_disturbance:
+  enabled:       false
+  mass_scale:    1.0        # multiply all body masses (1.0 = nominal)
+  force_body:    link6      # body name to receive external force
+  ext_force:     [0, 0, 0]  # [N] world-frame external force (e.g. [0, 0, -2])
+  gravity_scale: 1.0        # scale 9.81 (e.g. 0.9 = 10 % gravity reduction)
+
+# ── Disturbance Observer (Q-filter DOB) ─────────────────────────────────────
+dob:
+  enabled:         true
+  inertia_nominal: [0.12, 0.12, 0.06, 0.02, 0.01, 0.01]  # diagonal M_n [kg·m²]
+  damping_nominal: [0.0,  0.0,  0.0,  0.0,  0.0,  0.0]   # nominal Bv (0 = no model)
+  cutoff_hz:       5.0
+
+# ── Momentum Observer (De Luca & Mattone) ────────────────────────────────────
+momentum_observer:
+  enabled: true
+  Ko:      [20, 20, 20, 15, 10, 10]   # per-joint observer gain [1/s]
+
+# ── Force Observer (sensor-only LPF) ─────────────────────────────────────────
+force_observer:
+  enabled:    true
+  cutoff_hz:  10.0
