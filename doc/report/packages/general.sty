@@ -1,0 +1,38 @@
+\ProvidesPackage{general}
+
+% ---------- Encoding & font ----------
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% ---------- Math ----------
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% ---------- Graphics ----------
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\graphicspath{{figures/}{./figures/}}
+
+% ---------- Tables ----------
+\usepackage{booktabs}
+
+% ---------- References ----------
+\usepackage{cite}
+
+% ---------- Hyperlinks ----------
+\usepackage[
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  urlcolor=black
+]{hyperref}
+
+% ---------- Optional smarter refs ----------
+% \usepackage{cleveref}
+
+% ---------- Useful macros ----------
+\newcommand{\figref}[1]{Fig.~\ref{#1}}
+\newcommand{\tabref}[1]{Table~\ref{#1}}
+\newcommand{\eqnref}[1]{Eq.~(\ref{#1})}
